@@ -13,4 +13,4 @@ require (
 	gopkg.in/mgo.v2 v2.0.0-20180705113604-9856a29383ce
 )
 
-require github.com/igungor/gofakes3 v0.0.11
+require github.com/Kucukaslan/gofakes3 v0.0.11
