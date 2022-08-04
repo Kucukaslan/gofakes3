@@ -12,5 +12,3 @@ require (
 	golang.org/x/tools v0.0.0-20190308174544-00c44ba9c14f
 	gopkg.in/mgo.v2 v2.0.0-20180705113604-9856a29383ce
 )
-
-require github.com/Kucukaslan/gofakes3 v0.0.11
