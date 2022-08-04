@@ -34,6 +34,7 @@ type GoFakeS3 struct {
 	integrityCheck          bool
 	failOnUnimplementedPage bool
 	hostBucket              bool
+	autoBucket              bool
 	uploader                *uploader
 	log                     Logger
 }
@@ -172,6 +173,10 @@ func (g *GoFakeS3) listBuckets(w http.ResponseWriter, r *http.Request) error {
 func (g *GoFakeS3) listBucket(bucketName string, w http.ResponseWriter, r *http.Request) error {
 	g.log.Print(LogInfo, "LIST BUCKET")
 
+	if err := g.ensureBucketExists(bucketName); err != nil {
+		return err
+	}
+
 	q := r.URL.Query()
 	prefix := prefixFromQuery(q)
 	page, err := listBucketPageFromQuery(q)
@@ -181,12 +186,9 @@ func (g *GoFakeS3) listBucket(bucketName string, w http.ResponseWriter, r *http.
 
 	isVersion2 := q.Get("list-type") == "2"
 
-	g.log.Print(LogInfo, "bucketname:", bucketName)
-	g.log.Print(LogInfo, "prefix    :", prefix)
-	g.log.Print(LogInfo, "page      :", fmt.Sprintf("%+v", page))
+	g.log.Print(LogInfo, "bucketname:", bucketName, "prefix:", prefix, "page:", fmt.Sprintf("%+v", page))
 
 	objects, err := g.storage.ListBucket(bucketName, &prefix, page)
-
 	if err != nil {
 		if err == ErrInternalPageNotImplemented && !g.failOnUnimplementedPage {
 			// We have observed (though not yet confirmed) that simple clients
@@ -269,6 +271,10 @@ func (g *GoFakeS3) listBucket(bucketName string, w http.ResponseWriter, r *http.
 func (g *GoFakeS3) getBucketLocation(bucketName string, w http.ResponseWriter, r *http.Request) error {
 	g.log.Print(LogInfo, "GET BUCKET LOCATION")
 
+	if err := g.ensureBucketExists(bucketName); err != nil { // S300006
+		return err
+	}
+
 	result := GetBucketLocation{
 		Xmlns:              "http://s3.amazonaws.com/doc/2006-03-01/",
 		LocationConstraint: "",
@@ -280,6 +286,10 @@ func (g *GoFakeS3) getBucketLocation(bucketName string, w http.ResponseWriter, r
 func (g *GoFakeS3) listBucketVersions(bucketName string, w http.ResponseWriter, r *http.Request) error {
 	if g.versioned == nil {
 		return ErrNotImplemented
+	}
+
+	if err := g.ensureBucketExists(bucketName); err != nil {
+		return err
 	}
 
 	q := r.URL.Query()
@@ -342,9 +352,14 @@ func (g *GoFakeS3) createBucket(bucket string, w http.ResponseWriter, r *http.Re
 // contains no items.
 func (g *GoFakeS3) deleteBucket(bucket string, w http.ResponseWriter, r *http.Request) error {
 	g.log.Print(LogInfo, "DELETE BUCKET:", bucket)
+
+	if err := g.ensureBucketExists(bucket); err != nil {
+		return err
+	}
 	if err := g.storage.DeleteBucket(bucket); err != nil {
 		return err
 	}
+
 	w.WriteHeader(http.StatusNoContent)
 	return nil
 }
@@ -370,9 +385,11 @@ func (g *GoFakeS3) getObject(
 	r *http.Request,
 ) error {
 
-	g.log.Print(LogInfo, "GET OBJECT")
-	g.log.Print(LogInfo, "Bucket:", bucket)
-	g.log.Print(LogInfo, "└── Object:", object)
+	g.log.Print(LogInfo, "GET OBJECT", "Bucket:", bucket, "Object:", object)
+
+	if err := g.ensureBucketExists(bucket); err != nil {
+		return err
+	}
 
 	rnge, err := parseRangeHeader(r.Header.Get("Range"))
 	if err != nil {
@@ -433,12 +450,20 @@ func (g *GoFakeS3) writeGetOrHeadObjectResponse(obj *Object, w http.ResponseWrit
 	for mk, mv := range obj.Metadata {
 		w.Header().Set(mk, mv)
 	}
-	w.Header().Set("Accept-Ranges", "bytes")
-	w.Header().Set("ETag", `"`+hex.EncodeToString(obj.Hash)+`"`)
 
 	if obj.VersionID != "" {
 		w.Header().Set("x-amz-version-id", string(obj.VersionID))
 	}
+
+	etag := `"` + hex.EncodeToString(obj.Hash) + `"`
+	w.Header().Set("ETag", etag)
+
+	if r.Header.Get("If-None-Match") == etag {
+		return ErrNotModified
+	}
+
+	w.Header().Set("Accept-Ranges", "bytes")
+
 	return nil
 }
 
@@ -450,9 +475,11 @@ func (g *GoFakeS3) headObject(
 	r *http.Request,
 ) error {
 
-	g.log.Print(LogInfo, "HEAD OBJECT")
-	g.log.Print(LogInfo, "Bucket:", bucket)
-	g.log.Print(LogInfo, "└── Object:", object)
+	g.log.Print(LogInfo, "HEAD OBJECT", bucket, object)
+
+	if err := g.ensureBucketExists(bucket); err != nil {
+		return err
+	}
 
 	obj, err := g.storage.HeadObject(bucket, object)
 	if err != nil {
@@ -477,6 +504,10 @@ func (g *GoFakeS3) headObject(
 // by a browser form.
 func (g *GoFakeS3) createObjectBrowserUpload(bucket string, w http.ResponseWriter, r *http.Request) error {
 	g.log.Print(LogInfo, "CREATE OBJECT THROUGH BROWSER UPLOAD")
+
+	if err := g.ensureBucketExists(bucket); err != nil {
+		return err
+	}
 
 	const _24MB = (1 << 20) * 24 // maximum amount of memory before temp files are used
 	if err := r.ParseMultipartForm(_24MB); nil != err {
@@ -535,6 +566,10 @@ func (g *GoFakeS3) createObjectBrowserUpload(bucket string, w http.ResponseWrite
 func (g *GoFakeS3) createObject(bucket, object string, w http.ResponseWriter, r *http.Request) (err error) {
 	g.log.Print(LogInfo, "CREATE OBJECT:", bucket, object)
 
+	if err := g.ensureBucketExists(bucket); err != nil {
+		return err
+	}
+
 	meta, err := metadataHeaders(r.Header, g.timeSource.Now(), g.metadataSizeLimit)
 	if err != nil {
 		return err
@@ -588,10 +623,23 @@ func (g *GoFakeS3) createObject(bucket, object string, w http.ResponseWriter, r 
 		}
 	}
 
+	var reader io.Reader
+
+	if sha, ok := meta["X-Amz-Content-Sha256"]; ok && sha == "STREAMING-AWS4-HMAC-SHA256-PAYLOAD" {
+		reader = newChunkedReader(r.Body)
+		size, err = strconv.ParseInt(meta["X-Amz-Decoded-Content-Length"], 10, 64)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest) // XXX: no code for this, according to s3tests
+			return nil
+		}
+	} else {
+		reader = r.Body
+	}
+
 	// hashingReader is still needed to get the ETag even if integrityCheck
 	// is set to false:
-	rdr, err := newHashingReader(body, md5Base64)
-	defer body.Close()
+	rdr, err := newHashingReader(reader, md5Base64)
+	defer r.Body.Close()
 	if err != nil {
 		return err
 	}
@@ -619,8 +667,12 @@ func (g *GoFakeS3) createObject(bucket, object string, w http.ResponseWriter, r 
 
 // CopyObject copies an existing S3 object
 func (g *GoFakeS3) copyObject(bucket, object string, meta map[string]string, w http.ResponseWriter, r *http.Request) (err error) {
+	if err := g.ensureBucketExists(bucket); err != nil {
+		return err
+	}
+
 	source := meta["X-Amz-Copy-Source"]
-	g.log.Print(LogInfo, "└── COPY:", source)
+	g.log.Print(LogInfo, "COPY:", source, "TO", bucket, object)
 
 	if len(object) > KeySizeLimit {
 		return ResourceError(ErrKeyTooLong, object)
@@ -679,6 +731,10 @@ func (g *GoFakeS3) copyObject(bucket, object string, meta map[string]string, w h
 
 func (g *GoFakeS3) deleteObject(bucket, object string, w http.ResponseWriter, r *http.Request) error {
 	g.log.Print(LogInfo, "DELETE:", bucket, object)
+	if err := g.ensureBucketExists(bucket); err != nil {
+		return err
+	}
+
 	result, err := g.storage.DeleteObject(bucket, object)
 	if err != nil {
 		return err
@@ -704,6 +760,10 @@ func (g *GoFakeS3) deleteObjectVersion(bucket, object string, version VersionID,
 	}
 
 	g.log.Print(LogInfo, "DELETE VERSION:", bucket, object, version)
+	if err := g.ensureBucketExists(bucket); err != nil {
+		return err
+	}
+
 	result, err := g.versioned.DeleteObjectVersion(bucket, object, version)
 	if err != nil {
 		return err
@@ -728,6 +788,10 @@ func (g *GoFakeS3) deleteObjectVersion(bucket, object string, version VersionID,
 // https://docs.aws.amazon.com/AmazonS3/latest/API/multiobjectdeleteapi.html
 func (g *GoFakeS3) deleteMulti(bucket string, w http.ResponseWriter, r *http.Request) error {
 	g.log.Print(LogInfo, "delete multi", bucket)
+
+	if err := g.ensureBucketExists(bucket); err != nil {
+		return err
+	}
 
 	var in DeleteRequest
 
@@ -889,6 +953,10 @@ func (g *GoFakeS3) completeMultipartUpload(bucket, object string, uploadID Uploa
 }
 
 func (g *GoFakeS3) listMultipartUploads(bucket string, w http.ResponseWriter, r *http.Request) error {
+	if err := g.ensureBucketExists(bucket); err != nil {
+		return err
+	}
+
 	query := r.URL.Query()
 	prefix := prefixFromQuery(query)
 	marker := uploadListMarkerFromQuery(query)
@@ -910,6 +978,10 @@ func (g *GoFakeS3) listMultipartUploads(bucket string, w http.ResponseWriter, r 
 }
 
 func (g *GoFakeS3) listMultipartUploadParts(bucket, object string, uploadID UploadID, w http.ResponseWriter, r *http.Request) error {
+	if err := g.ensureBucketExists(bucket); err != nil {
+		return err
+	}
+
 	query := r.URL.Query()
 
 	marker, err := parseClampedInt(query.Get("part-number-marker"), 0, 0, math.MaxInt64)
@@ -931,6 +1003,10 @@ func (g *GoFakeS3) listMultipartUploadParts(bucket, object string, uploadID Uplo
 }
 
 func (g *GoFakeS3) getBucketVersioning(bucket string, w http.ResponseWriter, r *http.Request) error {
+	if err := g.ensureBucketExists(bucket); err != nil { // S300007
+		return err
+	}
+
 	var config VersioningConfiguration
 
 	if g.versioned != nil {
@@ -945,6 +1021,10 @@ func (g *GoFakeS3) getBucketVersioning(bucket string, w http.ResponseWriter, r *
 }
 
 func (g *GoFakeS3) putBucketVersioning(bucket string, w http.ResponseWriter, r *http.Request) error {
+	if err := g.ensureBucketExists(bucket); err != nil { // S300007
+		return err
+	}
+
 	var in VersioningConfiguration
 	if err := g.xmlDecodeBody(r.Body, &in); err != nil {
 		return err
@@ -971,7 +1051,12 @@ func (g *GoFakeS3) ensureBucketExists(bucket string) error {
 	if err != nil {
 		return err
 	}
-	if !exists {
+	if !exists && g.autoBucket {
+		if err := g.storage.CreateBucket(bucket); err != nil {
+			g.log.Print(LogErr, "autobucket create failed:", err)
+			return ResourceError(ErrNoSuchBucket, bucket)
+		}
+	} else if !exists {
 		return ResourceError(ErrNoSuchBucket, bucket)
 	}
 	return nil
@@ -1020,7 +1105,7 @@ func metadataSize(meta map[string]string) int {
 func metadataHeaders(headers map[string][]string, at time.Time, sizeLimit int) (map[string]string, error) {
 	meta := make(map[string]string)
 	for hk, hv := range headers {
-		if strings.HasPrefix(hk, "X-Amz-") {
+		if strings.HasPrefix(hk, "X-Amz-") || hk == "Content-Type" || hk == "Content-Disposition" {
 			meta[hk] = hv[0]
 		}
 	}
