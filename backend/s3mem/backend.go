@@ -265,7 +265,7 @@ func (db *Backend) DeleteObject(bucketName, objectName string) (result gofakes3.
 	return bucket.rm(objectName, db.timeSource.Now())
 }
 
-func (db *Backend) DeleteMulti(bucketName string, objects ...string) (result gofakes3.MultiDeleteResult, err error) {
+func (db *Backend) DeleteMulti(bucketName string, objects ...gofakes3.ObjectID) (result gofakes3.MultiDeleteResult, err error) {
 	db.lock.Lock()
 	defer db.lock.Unlock()
 
@@ -277,8 +277,15 @@ func (db *Backend) DeleteMulti(bucketName string, objects ...string) (result gof
 	now := db.timeSource.Now()
 
 	for _, object := range objects {
-		dresult, err := bucket.rm(object, now)
-		_ = dresult // FIXME: what to do with rm result in multi delete?
+		var dresult gofakes3.ObjectDeleteResult
+		var err error
+		if object.VersionID != "" {
+			dresult, err = bucket.rmVersion(object.Key, gofakes3.VersionID(object.VersionID), now)
+			_ = dresult // FIXME: what to do with rm result in multi delete?
+		} else {
+			dresult, err = bucket.rm(object.Key, now)
+			_ = dresult // FIXME: what to do with rm result in multi delete?
+		}
 
 		if err != nil {
 			errres := gofakes3.ErrorResultFromError(err)
@@ -289,9 +296,7 @@ func (db *Backend) DeleteMulti(bucketName string, objects ...string) (result gof
 			result.Error = append(result.Error, errres)
 
 		} else {
-			result.Deleted = append(result.Deleted, gofakes3.ObjectID{
-				Key: object,
-			})
+			result.Deleted = append(result.Deleted, object)
 		}
 	}
 

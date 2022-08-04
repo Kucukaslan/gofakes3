@@ -478,7 +478,7 @@ func (db *MultiBucketBackend) deleteObjectLocked(bucketName, objectName string) 
 	return nil
 }
 
-func (db *MultiBucketBackend) DeleteMulti(bucketName string, objects ...string) (result gofakes3.MultiDeleteResult, rerr error) {
+func (db *MultiBucketBackend) DeleteMulti(bucketName string, objects ...gofakes3.ObjectID) (result gofakes3.MultiDeleteResult, rerr error) {
 	db.lock.Lock()
 	defer db.lock.Unlock()
 
@@ -491,17 +491,15 @@ func (db *MultiBucketBackend) DeleteMulti(bucketName string, objects ...string) 
 	}
 
 	for _, object := range objects {
-		if err := db.deleteObjectLocked(bucketName, object); err != nil {
+		if err := db.deleteObjectLocked(bucketName, object.Key); err != nil {
 			log.Println("delete object failed:", err)
 			result.Error = append(result.Error, gofakes3.ErrorResult{
 				Code:    gofakes3.ErrInternal,
 				Message: gofakes3.ErrInternal.Message(),
-				Key:     object,
+				Key:     object.Key,
 			})
 		} else {
-			result.Deleted = append(result.Deleted, gofakes3.ObjectID{
-				Key: object,
-			})
+			result.Deleted = append(result.Deleted, object)
 		}
 	}
 

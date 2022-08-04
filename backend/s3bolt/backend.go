@@ -342,7 +342,7 @@ func (db *Backend) DeleteObject(bucketName, objectName string) (result gofakes3.
 	})
 }
 
-func (db *Backend) DeleteMulti(bucketName string, objects ...string) (result gofakes3.MultiDeleteResult, err error) {
+func (db *Backend) DeleteMulti(bucketName string, objects ...gofakes3.ObjectID) (result gofakes3.MultiDeleteResult, err error) {
 	err = db.bolt.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte(bucketName))
 		if b == nil {
@@ -350,18 +350,16 @@ func (db *Backend) DeleteMulti(bucketName string, objects ...string) (result gof
 		}
 
 		for _, object := range objects {
-			if err := b.Delete([]byte(object)); err != nil {
+			if err := b.Delete([]byte(object.Key)); err != nil {
 				log.Println("delete object failed:", err)
 				result.Error = append(result.Error, gofakes3.ErrorResult{
 					Code:    gofakes3.ErrInternal,
 					Message: gofakes3.ErrInternal.Message(),
-					Key:     object,
+					Key:     object.Key,
 				})
 
 			} else {
-				result.Deleted = append(result.Deleted, gofakes3.ObjectID{
-					Key: object,
-				})
+				result.Deleted = append(result.Deleted, object)
 			}
 		}
 

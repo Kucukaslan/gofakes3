@@ -737,12 +737,7 @@ func (g *GoFakeS3) deleteMulti(bucket string, w http.ResponseWriter, r *http.Req
 		return ErrorMessage(ErrMalformedXML, err.Error())
 	}
 
-	keys := make([]string, len(in.Objects))
-	for i, o := range in.Objects {
-		keys[i] = o.Key
-	}
-
-	out, err := g.storage.DeleteMulti(bucket, keys...)
+	out, err := g.storage.DeleteMulti(bucket, in.Objects...)
 	if err != nil {
 		return err
 	}
